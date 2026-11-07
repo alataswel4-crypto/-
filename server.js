@@ -1,46 +1,90 @@
 const express = require('express');
-const http = require('http');
-const { Server } = require("socket.io");
-
+const cors = require('cors');
 const app = express();
-const server = http.createServer(app);
 
-// Настраиваем Socket.io
-const io = new Server(server, {
-  cors: {
-    origin: "*", // Разрешаем подключение с любых сайтов/игр
-    methods: ["GET", "POST"]
-  }
-});
+// Разрешаем серверу принимать JSON и запросы с других сайтов (CORS)
+app.use(cors());
+app.use(express.json());
 
-// Простой тестовый маршрут, чтобы проверить, что сервер жив
-app.get('/', (req, res) => {
-  res.send('Сервер чата работает! Подключайтесь через Socket.io');
-});
+// --- ХРАНИЛИЩЕ (В ПАМЯТИ) ---
+// Внимание: при перезапуске сервера на Render эти данные обнулятся!
+// Для реального проекта нужно подключить MongoDB.
+let players = {}; // База игроков: { "id": { name, level, avatar, ... } }
+let chatMessages = []; // История чата
 
-// Обработка подключений
-io.on('connection', (socket) => {
-  console.log('Игрок подключился. ID:', socket.id);
+// --- 1. API ДЛЯ ПРОФИЛЯ ---
 
-  // Слушаем событие 'chat message' от клиента
-  socket.on('chat message', (data) => {
-    // data должен содержать имя игрока и текст сообщения
-    // Например: { user: "Player1", text: "Привет всем!" }
+// Создать или обновить профиль игрока (POST /api/profile)
+app.post('/api/profile', (req, res) => {
+    const { id, name, level, avatar } = req.body;
     
-    console.log('Получено сообщение:', data);
-    
-    // Рассылаем это сообщение ВСЕМ подключенным игрокам
-    io.emit('chat message', data); 
-  });
+    if (!id || !name) {
+        return res.status(400).json({ error: "Нужны поля id и name" });
+    }
 
-  // Обработка отключения
-  socket.on('disconnect', () => {
-    console.log('Игрок отключился. ID:', socket.id);
-  });
+    // Сохраняем или обновляем данные игрока
+    players[id] = {
+        id: id,
+        name: name,
+        level: level || 1,
+        avatar: avatar || "default.png",
+        lastSeen: new Date()
+    };
+
+    res.json({ success: true, message: "Профиль сохранен", profile: players[id] });
 });
 
-// Render автоматически передает порт в переменную окружения PORT
+// Получить профиль игрока (GET /api/profile/:id)
+app.get('/api/profile/:id', (req, res) => {
+    const playerId = req.params.id;
+    const player = players[playerId];
+
+    if (player) {
+        res.json(player);
+    } else {
+        res.status(404).json({ error: "Игрок не найден" });
+    }
+});
+
+
+// --- 2. API ДЛЯ ЧАТА ---
+
+// Отправить сообщение в чат (POST /api/chat)
+app.post('/api/chat', (req, res) => {
+    const { playerId, playerName, text } = req.body;
+
+    if (!playerId || !text) {
+        return res.status(400).json({ error: "Нужны поля playerId и text" });
+    }
+
+    const message = {
+        id: Date.now().toString(), // Уникальный ID сообщения
+        playerId: playerId,
+        playerName: playerName || "Аноним",
+        text: text,
+        timestamp: new Date().toISOString()
+    };
+
+    chatMessages.push(message);
+
+    // Ограничиваем историю чата последними 50 сообщениями (чтобы не забить память)
+    if (chatMessages.length > 50) {
+        chatMessages.shift(); 
+    }
+
+    res.json({ success: true, message: "Сообщение отправлено" });
+});
+
+// Получить историю чата (GET /api/chat)
+app.get('/api/chat', (req, res) => {
+    // Возвращаем последние 50 сообщений
+    res.json(chatMessages);
+});
+
+
+// --- ЗАПУСК СЕРВЕРА ---
+// Render автоматически задает порт через переменную окружения PORT
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Сервер запущен на порту ${PORT}`);
+app.listen(PORT, () => {
+    console.log(`Сервер запущен на порту ${PORT}`);
 });
